@@ -1,0 +1,22 @@
+# Python virtual environments
+.venv/
+env/
+venv/
+
+# IDE / Editor files
+.vscode/
+.idea/
+
+# OS-specific files
+*.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Python cache files
+__pycache__/
+*.pyc
+
+#qdrant folder
+qdrant/

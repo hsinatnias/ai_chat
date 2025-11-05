@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>RAG Chat — Admin</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; background: #f6f7fb; }
+    .card { max-width: 980px; margin: 0 auto; background: white; padding: 18px; border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.06); }
+    h1 { margin-top: 0; }
+    label { display:block; margin:8px 0 4px; font-weight:600; }
+    input[type=file] { display:block; margin-bottom:8px; }
+    .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    button { padding:8px 12px; border-radius:8px; border:0; background:#111827; color:white; cursor:pointer; }
+    button.danger { background:#b91c1c; }
+    .log { margin-top:12px; white-space:pre-wrap; font-family:monospace; background:#f3f4f6;
+      padding:10px; border-radius:8px; max-height:360px; overflow:auto; }
+    .small { font-size:12px; color:#555; }
+    select, input[type=text] { padding:8px; border-radius:6px; border:1px solid #ddd; }
+    .controls { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .muted { color:#666; font-size:13px; margin-left:10px; }
+  </style>
+
+  <script>
+    // If not logged in, send to admin-login (server page will validate key then fetch /admin/content)
+    if (!sessionStorage.getItem("dev_api_key")) {
+      // Use redirect rather than alert so user isn't blocked by popups
+      window.location.href = "/admin-login";
+    }
+  </script>
+</head>
+
+<body>
+  <div class="card">
+    <h1>Admin — Ingest documents</h1>
+
+    <p class="small">This admin panel requires an API key. For local testing you'll be prompted for the key once and it will be saved to <code>sessionStorage</code>.</p>
+
+    <div style="margin-bottom:8px;">
+      <label>API key (stored in sessionStorage)</label>
+      <button id="setKey">Set / Paste API Key</button>
+      <button id="clearKey" style="margin-left:8px;">Clear Key</button>
+      <span id="keyBadge" class="muted"></span>
+    </div>
+
+    <hr />
+
+    <div>
+      <label for="moduleSelect">Select Module</label>
+      <div class="row">
+        <select id="moduleSelect" style="min-width:220px;">
+          <option value="">-- loading --</option>
+        </select>
+
+        <div class="controls">
+          <button id="refreshModules">Refresh</button>
+          <button id="addModuleBtn">Add New Module</button>
+          <button id="deleteModuleBtn" class="danger">Delete Selected Module</button>
+        </div>
+      </div>
+      <p class="small">Modules are logical KB compartments. Upload + ingest operate per-module. Deleting a module only removes the DB record; to remove vectors use "Delete Qdrant collection for module".</p>
+    </div>
+
+    <hr />
+
+    <div>
+      <label>Upload files (PDF / DOCX / TXT / MD / HTML)</label>
+      <input id="files" type="file" multiple />
+      <div class="row" style="margin-top:8px;">
+        <button id="uploadBtn">Upload files to module</button>
+        <button id="ingestBtn">Trigger ingest for module</button>
+        <button id="deleteCollectionBtn" class="danger">Delete Qdrant collection for module</button>
+      </div>
+      <p class="small">After upload, click "Trigger ingest" to run server-side ingest for the selected module.</p>
+    </div>
+
+    <div class="log" id="log">Logs will appear here...</div>
+  </div>
+
+  <script>
+    (function () {
+      if (window.__rag_admin_loaded) return;
+      window.__rag_admin_loaded = true;
+
+      // Elements
+      const logEl = document.getElementById('log');
+      const keyBadge = document.getElementById('keyBadge');
+      const moduleSelect = document.getElementById('moduleSelect');
+      const filesEl = document.getElementById('files');
+
+      // Buttons
+      const setKeyBtn = document.getElementById('setKey');
+      const clearKeyBtn = document.getElementById('clearKey');
+      const refreshModulesBtn = document.getElementById('refreshModules');
+      const addModuleBtn = document.getElementById('addModuleBtn');
+      const deleteModuleBtn = document.getElementById('deleteModuleBtn');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const ingestBtn = document.getElementById('ingestBtn');
+      const deleteCollectionBtn = document.getElementById('deleteCollectionBtn');
+
+      // small helpers
+      function getApiKey() { return sessionStorage.getItem('dev_api_key') || null; }
+      function showKeyBadge() { keyBadge.textContent = getApiKey() ? 'API key present' : 'No API key'; }
+      function ts() { return new Date().toLocaleTimeString(); }
+      function log(...args) {
+        const txt = args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+        if (logEl) {
+          logEl.textContent += `[${ts()}] ${txt}\n`;
+          logEl.scrollTop = logEl.scrollHeight;
+        } else {
+          console.log(...args);
+        }
+      }
+
+      // POLLING state (dedupe log output)
+      let pollTimer = null;
+      let lastLogTail = "";
+
+      async function fetchIngestStatusAndShow() {
+        const key = getApiKey();
+        if (!key) return;
+        try {
+          const res = await fetch('/admin/ingest_status', { headers: { 'X-API-Key': key } });
+          if (!res.ok) {
+            log('Status fetch failed:', res.status);
+            return null;
+          }
+          const data = await res.json();
+
+          // compact status line
+          log('STATUS:', data.status || '?', data.progress || '', data.message || '');
+
+          // append only new tail portion
+          if (data.log_tail) {
+            const tail = data.log_tail;
+            if (tail !== lastLogTail) {
+              // if new tail contains the previous tail, only append the new suffix
+              if (lastLogTail && tail.includes(lastLogTail)) {
+                const idx = tail.indexOf(lastLogTail) + lastLogTail.length;
+                const newPart = tail.slice(idx);
+                if (newPart.trim()) {
+                  log('---- ingest log (append) ----');
+                  log(newPart);
+                  log('---- end append ----');
+                }
+              } else {
+                // no overlap -> print the whole tail (first time / very different)
+                log('---- ingest log ----');
+                log(tail);
+                log('---- end log ----');
+              }
+              lastLogTail = tail;
+            } // else identical tail: skip
+          }
+
+          // stop conditions
+          if (data.status === 'done' || data.status === 'error' || (data.pid && !data.pid_alive)) {
+            log('Ingest finished:', data.status);
+            stopIngestPoll();
+          }
+          return data;
+        } catch (e) {
+          log('Status poll error:', e.toString());
+          return null;
+        }
+      }
+
+      function startIngestPoll() {
+        if (pollTimer) { log('Ingest poll already running'); return; }
+        // immediate, then interval
+        fetchIngestStatusAndShow();
+        pollTimer = setInterval(fetchIngestStatusAndShow, 3000);
+        log('Started ingest status poll (every 3s).');
+      }
+
+      function stopIngestPoll() {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          lastLogTail = "";
+          log('Stopped ingest status poll.');
+        }
+      }
+
+      // Expose so other handlers can trigger it
+      window.startIngestPoll = startIngestPoll;
+      window.stopIngestPoll = stopIngestPoll;
+
+      // MODULE API helpers
+      async function fetchModules() {
+        const key = getApiKey();
+        if (!key) { log('No API key to fetch modules'); return; }
+        try {
+          const res = await fetch('/admin/modules', { headers: { 'X-API-Key': key } });
+          if (!res.ok) { log('Failed to fetch modules:', res.status); return; }
+          const modules = await res.json();
+          moduleSelect.innerHTML = '';
+          if (!modules || modules.length === 0) {
+            const opt = document.createElement('option'); opt.value = ''; opt.innerText = '-- no modules --'; moduleSelect.appendChild(opt); return;
+          }
+          modules.forEach(m => {
+            const opt = document.createElement('option'); opt.value = m; opt.innerText = m; moduleSelect.appendChild(opt);
+          });
+          log('Loaded modules:', modules.join(', '));
+        } catch (e) { log('fetchModules error:', e.toString()); }
+      }
+
+      function getSelectedModule() { return moduleSelect.value || null; }
+
+      // UI handlers
+      setKeyBtn.onclick = () => {
+        const entered = prompt('Enter your X-API-Key for admin (saved to sessionStorage for this tab):');
+        if (entered) { sessionStorage.setItem('dev_api_key', entered.trim()); showKeyBadge(); log('API key saved'); }
+      };
+      clearKeyBtn.onclick = () => {
+        sessionStorage.removeItem('dev_api_key'); showKeyBadge(); log('API key removed'); window.location.href = '/admin-login';
+      };
+
+      refreshModulesBtn.onclick = () => fetchModules();
+
+      addModuleBtn.onclick = async () => {
+        const name = prompt('Enter module name (e.g. C00):');
+        if (!name) return;
+        const key = getApiKey(); if (!key) { alert('No API key'); return; }
+        try {
+          const res = await fetch('/admin/modules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'X-API-Key': key },
+            body: new URLSearchParams({ module_name: name })
+          });
+          const data = await res.json();
+          if (!res.ok) { log('Add module failed:', JSON.stringify(data)); alert('Failed to add module'); return; }
+          log('Module added:', name);
+          fetchModules();
+        } catch (e) { log('Add module error:', e.toString()); alert('Error adding module'); }
+      };
+
+      deleteModuleBtn.onclick = async () => {
+        const selected = getSelectedModule();
+        if (!selected) { alert('Select a module'); return; }
+        if (!confirm(`Delete module ${selected}? This removes module record. To remove vectors use Delete Qdrant collection for module.`)) return;
+        const key = getApiKey(); if (!key) return;
+        try {
+          const res = await fetch(`/admin/modules/${encodeURIComponent(selected)}`, { method: 'DELETE', headers: { 'X-API-Key': key }});
+          const data = await res.json();
+          if (!res.ok) { log('Delete module failed:', JSON.stringify(data)); alert('Failed to delete module'); return; }
+          log('Module deleted:', selected);
+          fetchModules();
+        } catch (e) { log('Delete module error:', e.toString()); alert('Error deleting module'); }
+      };
+
+      // UPLOAD: each upload includes module in form data
+      uploadBtn.onclick = async () => {
+        const selected = getSelectedModule();
+        if (!selected) { alert('Select a module first'); return; }
+        const key = getApiKey(); if (!key) { alert('No API key'); return; }
+        const files = filesEl.files;
+        if (!files || files.length === 0) { alert('Choose files'); return; }
+
+        for (const f of files) {
+          const fd = new FormData();
+          fd.append('file', f);
+          fd.append('module', selected);
+          log('Uploading', f.name, '-> module', selected);
+          try {
+            const res = await fetch('/admin/upload', { method: 'POST', headers: { 'X-API-Key': key }, body: fd });
+            const txt = await res.text();
+            if (!res.ok) log('Upload failed:', res.status, txt); else log('Upload success:', txt);
+          } catch (e) { log('Upload error:', e.toString()); }
+        }
+      };
+
+      // TRIGGER INGEST (module-aware). Server should accept {"module": "<name>"} in body
+      ingestBtn.onclick = async () => {
+        const selected = getSelectedModule();
+        if (!selected) { alert('Select a module'); return; }
+        if (!confirm(`Trigger ingest for module ${selected}?`)) return;
+        const key = getApiKey(); if (!key) return;
+        try {
+          const res = await fetch('/admin/ingest', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+            body: JSON.stringify({ module: selected })
+          });
+          const data = await res.json();
+          if (!res.ok) { log('Ingest trigger failed:', JSON.stringify(data)); alert('Failed to trigger ingest'); return; }
+          log('Ingest started:', JSON.stringify(data));
+          // start poll only after ingest started
+          startIngestPoll();
+        } catch (e) { log('Ingest error:', e.toString()); alert('Error starting ingest'); }
+      };
+
+      // Delete Qdrant collection for module: sends { module, confirm: true }
+      deleteCollectionBtn.onclick = async () => {
+        const selected = getSelectedModule();
+        if (!selected) { alert('Select a module'); return; }
+        if (!confirm(`Danger: delete Qdrant collection for module ${selected}? This permanently removes vectors for that module.`)) return;
+        const key = getApiKey(); if (!key) return;
+        try {
+          const res = await fetch('/admin/delete_collection', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+            body: JSON.stringify({ module: selected, confirm: true })
+          });
+          const data = await res.json();
+          if (!res.ok) { log('Delete failed:', JSON.stringify(data)); alert('Delete failed'); return; }
+          log('Delete OK:', JSON.stringify(data));
+        } catch (e) { log('Delete error:', e.toString()); alert('Delete request failed'); }
+      };
+
+      // On load: show key, fetch modules and check ingest status (if ingest currently running, start polling)
+      (async function init() {
+        showKeyBadge();
+        await fetchModules();
+        // check if ingest already running -> start polling only if needed
+        try {
+          const key = getApiKey();
+          if (!key) return;
+          const res = await fetch('/admin/ingest_status', { headers: { 'X-API-Key': key }});
+          if (res.ok) {
+            const status = await res.json();
+            if (status && (status.pid && status.pid_alive || status.status === 'running')) {
+              log('Detected background ingest running — starting status poll.');
+              startIngestPoll();
+            }
+            // show initial status info in the log (one-shot)
+            if (status) {
+              log('Initial ingest status:', status.status || '', status.progress || '', status.message || '');
+              if (status.log_tail) { log('---- initial log tail ----'); log(status.log_tail); log('---- end initial tail ----'); lastLogTail = status.log_tail; }
+            }
+          }
+        } catch (e) {
+          log('Initial status check failed:', e.toString());
+        }
+      })();
+
+      // keyboard shortcut: Ctrl+R refresh modules
+      document.addEventListener('keydown', (e) => { if (e.ctrlKey && e.key.toLowerCase() === 'r') { e.preventDefault(); fetchModules(); log('Modules refreshed (Ctrl+R)'); } });
+
+    })();
+  </script>
+</body>
+
+</html>
