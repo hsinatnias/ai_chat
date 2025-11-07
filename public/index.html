@@ -43,7 +43,9 @@ const langSel = document.getElementById('lang');
 
 // dev: prompt for API key once, store in sessionStorage
 function getDevKey() {
-  const key = sessionStorage.getItem("dev_api_key");
+  //const key = sessionStorage.getItem("dev_api_key");
+  const key = 'Af8DEeYg3QsbTszC1RUXcbEZ1DxJ48VbdDpmem4wbFg';
+  console.log(key);
   if (key) return key;
   const entered = prompt("Enter your X-API-Key for local testing (will be saved to sessionStorage):");
   if (entered) sessionStorage.setItem("dev_api_key", entered.trim());

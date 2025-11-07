@@ -448,6 +448,18 @@ async def chat(req: ChatRequest):
         payload = getattr(h, "payload", None) or (h.payload if hasattr(h, "payload") else (h.get("payload") if isinstance(h, dict) else {}))
         score = getattr(h, "score", None) or (h.score if hasattr(h, "score") else (h.get("score") if isinstance(h, dict) else None))
         hits_d.append({"payload": payload or {}, "score": score})
+    module_hint = None
+    try:
+        for hhh in hits_d:
+            try:
+                mp = (hhh.get("payload") or {}).get("module")
+                if mp:
+                    module_hint = mp
+                    break
+            except Exception:
+                continue
+    except Exception:
+        module_hint = None
 
     # Build prompt using full chunk text when available
     prompt, citations = build_prompt(req.text, user_lang, hits_d)
@@ -501,13 +513,13 @@ async def chat(req: ChatRequest):
             # fall through to model generation branch below
         else:
             # safe to return extractive snippet
-            await cache_answer(req.text, user_lang, {"answer": snippet, "citations": citation})
+            await cache_answer(req.text, user_lang, {"answer": snippet, "citations": citation}, module=module_hint)
             # upsert semantic cache for this question
             from hashlib import sha1
             cache_id = int(sha1((req.text + user_lang).encode("utf-8")).hexdigest()[:12], 16)
             payload = {"question": req.text, "lang": user_lang, "answer": snippet, "citations": citation}
             try:
-                await semantic_cache_upsert(cache_id, vec, payload)
+                 await semantic_cache_upsert(cache_id, vec, payload, module=module_hint)
             except Exception as e:
                 print("WARN: semantic_cache_upsert failed:", e)
             print("BRANCH: extractive (returned snippet)")
@@ -519,12 +531,12 @@ async def chat(req: ChatRequest):
     answer = await call_ollama_async(prompt, model=model_to_use)
 
     # cache exact-match and semantic cache upsert
-    await cache_answer(req.text, user_lang, {"answer": answer, "citations": citations})
+    await cache_answer(req.text, user_lang, {"answer": snippet, "citations": citation}, module=module_hint)
     from hashlib import sha1
     cache_id = int(sha1((req.text + user_lang).encode("utf-8")).hexdigest()[:12], 16)
     sem_payload = {"question": req.text, "lang": user_lang, "answer": answer, "citations": citations}
     try:
-        await semantic_cache_upsert(cache_id, vec, sem_payload)
+         await semantic_cache_upsert(cache_id, vec, payload, module=module_hint)
     except Exception as e:
         print("WARN: semantic_cache_upsert failed:", e)
 

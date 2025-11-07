@@ -21,16 +21,23 @@ EMB_DIM_FALLBACK = int(os.getenv("EMB_DIM", "0")) or None
 # Redis client for exact-match cache
 redis = Redis.from_url(REDIS_URL, decode_responses=False)
 
+# === cache.py edits ===
+# Replace existing cache_answer / get_cached_answer with these:
+
 def make_key(prefix: str, *parts) -> str:
     h = hashlib.sha256("||".join(map(str, parts)).encode("utf-8")).hexdigest()
     return f"{prefix}:{h}"
 
-async def cache_answer(question: str, lang: str, answer_obj: dict, ttl: int = CACHE_TTL):
+async def cache_answer(question: str, lang: str, answer_obj: dict, ttl: int = CACHE_TTL, module: str | None = None):
     """
     exact-match cache (msgpack)
+    - attaches `_module` to the stored object when provided so we can invalidate by module.
     """
     key = make_key("answer", question, lang)
-    packed = msgpack.packb(answer_obj)
+    obj = dict(answer_obj) if isinstance(answer_obj, dict) else {"answer": answer_obj}
+    if module:
+        obj["_module"] = module
+    packed = msgpack.packb(obj)
     await redis.set(key, packed, ex=ttl)
 
 async def get_cached_answer(question: str, lang: str):
@@ -38,7 +45,53 @@ async def get_cached_answer(question: str, lang: str):
     data = await redis.get(key)
     if not data:
         return None
-    return msgpack.unpackb(data, raw=False)
+    try:
+        return msgpack.unpackb(data, raw=False)
+    except Exception:
+        # gracefully handle corrupted data
+        return None
+
+# Optional helper to list answer keys (for debugging)
+async def list_answer_keys(limit: int = 100):
+    keys = []
+    async for k in redis.scan_iter(match="answer:*"):
+        keys.append(k)
+        if len(keys) >= limit:
+            break
+    return keys
+
+
+# Replace semantic_cache_upsert with module-aware version:
+
+async def semantic_cache_upsert(id_: int, vector: list, payload: dict, module: str | None = None):
+    """
+    Upsert a single point into Qdrant cache collection.
+    - Adds 'vec', 'kb_version' and optional 'module' to payload so validation/overlap checks work.
+    - Runs blocking qc.upsert in a thread to avoid blocking event loop.
+    """
+    try:
+        # ensure collection exists (infer dim from vector if possible)
+        dim = len(vector) if vector and isinstance(vector, (list, tuple)) else 0
+        try:
+            _ensure_cache_collection(dim)
+        except Exception:
+            # continue; actual upsert will fail if collection doesn't exist or wrong dim
+            pass
+
+        payload = dict(payload)
+        payload["vec"] = vector
+        payload["kb_version"] = KB_VERSION
+        if module:
+            payload["module"] = module
+
+        pt = PointStruct(id=id_, vector=vector, payload=payload)
+        # use thread to avoid blocking asyncio loop
+        await asyncio.to_thread(qc.upsert, collection_name=QDRANT_CACHE_COLLECTION, points=[pt])
+        print(f"INFO: semantic_cache_upsert id={id_} vec_len={(len(vector) if vector else 0)} payload_keys={list(payload.keys())}")
+    except Exception as e:
+        print("ERROR: semantic_cache_upsert failed:", e)
+        raise
+
 
 # --- Semantic cache using Qdrant ---
 qc = QdrantClient(url=QDRANT_URL)
@@ -80,33 +133,7 @@ def _ensure_cache_collection(dim: int):
 # top-level
 KB_VERSION = int(os.getenv("KB_VERSION", "1"))
 
-async def semantic_cache_upsert(id_: int, vector: list, payload: dict):
-    """
-    Upsert a single point into Qdrant cache collection.
-    - Adds 'vec' and 'kb_version' to payload so validation/overlap checks work.
-    - Runs blocking qc.upsert in a thread to avoid blocking event loop.
-    """
-    try:
-        # ensure collection exists (infer dim from vector if possible)
-        dim = len(vector) if vector and isinstance(vector, (list, tuple)) else 0
-        try:
-            _ensure_cache_collection(dim)
-        except Exception:
-            # continue; actual upsert will fail if collection doesn't exist or wrong dim
-            pass
 
-        payload = dict(payload)
-        payload["vec"] = vector
-        payload["kb_version"] = KB_VERSION
-
-        pt = PointStruct(id=id_, vector=vector, payload=payload)
-        # use thread to avoid blocking asyncio loop
-        await asyncio.to_thread(qc.upsert, collection_name=QDRANT_CACHE_COLLECTION, points=[pt])
-        print(f"INFO: semantic_cache_upsert id={id_} vec_len={(len(vector) if vector else 0)} payload_keys={list(payload.keys())}")
-    except Exception as e:
-        print("ERROR: semantic_cache_upsert failed:", e)
-        # re-raise so callers (like app) can handle/log properly
-        raise
 
 def semantic_cache_search(vector: list, top_k: int = 1, score_threshold: float = 0.78, kb_version: int | None = None):
     """

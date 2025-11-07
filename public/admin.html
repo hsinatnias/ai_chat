@@ -101,7 +101,8 @@
       const deleteCollectionBtn = document.getElementById('deleteCollectionBtn');
 
       // small helpers
-      function getApiKey() { return sessionStorage.getItem('dev_api_key') || null; }
+      //function getApiKey() { return sessionStorage.getItem('dev_api_key') || null; }
+      function getApiKey() { return 'Af8DEeYg3QsbTszC1RUXcbEZ1DxJ48VbdDpmem4wbFg' }
       function showKeyBadge() { keyBadge.textContent = getApiKey() ? 'API key present' : 'No API key'; }
       function ts() { return new Date().toLocaleTimeString(); }
       function log(...args) {
