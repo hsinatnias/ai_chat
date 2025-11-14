@@ -1,0 +1,26 @@
+<service>
+  <id>AIChatbotService</id>
+  <name>AI Chatbot Service</name>
+  <description>Runs the AI Chatbot (uvicorn app) on system startup (uses wrapper to wait for dependencies)</description>
+
+  <!-- Run the blocking PowerShell wrapper so WinSW oversees the running uvicorn -->
+  <executable>C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe</executable>
+  <arguments>-NoProfile -ExecutionPolicy Bypass -File "C:\ai_chatbot\rag_chat4\start_ai_after_healthcheck.ps1"</arguments>
+
+  <workingdirectory>C:\ai_chatbot\rag_chat4</workingdirectory>
+
+  <logpath>C:\ai_chatbot\rag_chat4\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>1048576</sizeThreshold>
+    <keepFiles>5</keepFiles>
+  </log>
+
+  <!-- Keep the venv path available for child processes -->
+  <env name="PATH" value="C:\ai_chatbot\rag_chat4\.venv\Scripts;%PATH%" />
+
+  <!-- Ensure these services are started first (Windows start order) -->
+  <depend>OllamaService</depend>
+  <depend>QdrantService</depend>
+
+  <startmode>Automatic</startmode>
+</service>

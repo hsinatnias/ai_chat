@@ -1,0 +1,27 @@
+<service>
+  <id>OllamaService</id>
+  <name>Ollama Service</name>
+  <description>Runs Ollama (local model server) on system startup</description>
+
+  <!-- Path to the Ollama executable (note spaces) -->
+  <executable>C:\Users\AnishVM\AppData\Local\Programs\Ollama\ollama.exe</executable>
+
+  <!-- Arguments to start Ollama; adjust if your install requires different args -->
+  <arguments>serve</arguments>
+
+  <workingdirectory>C:\Users\AnishVM\AppData\Local\Programs\Ollama</workingdirectory>
+
+  <!-- Logging -->
+  <logpath>C:\ai_chatbot\rag_chat4\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold> <!-- 10 MB -->
+    <keepFiles>7</keepFiles>
+  </log>
+
+  <!-- Start automatically at boot -->
+  <startmode>Automatic</startmode>
+
+  <!-- Recommended environment entries if needed -->
+  <!-- <env name="SOME_ENV" value="some_value" /> -->
+
+</service>

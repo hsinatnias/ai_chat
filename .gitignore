@@ -18,13 +18,13 @@ logs/
 
 
 AIChatbotService.exe
-AIChatbotService.xml
+
 
 OllamaService.exe
-OllamaService.xml
+
 
 QdrantService.exe
-QdrantService.xml
+
 # Python cache files
 __pycache__/
 *.pyc

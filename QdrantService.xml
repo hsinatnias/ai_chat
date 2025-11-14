@@ -1,0 +1,24 @@
+<service>
+  <id>QdrantService</id>
+  <name>Qdrant Service</name>
+  <description>Runs Qdrant vector database on system startup</description>
+
+  <!-- Path to wrapper exe (WinSW generates an exe with this name) -->
+  <executable>C:\ai_chatbot\rag_chat4\qdrant\qdrant.exe</executable>
+
+  
+  <arguments></arguments>
+
+  <workingdirectory>C:\ai_chatbot\rag_chat4\qdrant</workingdirectory>
+
+  <logpath>C:\ai_chatbot\rag_chat4\logs</logpath>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold> <!-- 10 MB -->
+    <keepFiles>7</keepFiles>
+  </log>
+
+  <!-- Run as LocalSystem to avoid permission issues. Change to a user if you need one. -->
+  <account>LocalSystem</account>
+
+  <startmode>Automatic</startmode>
+</service>
