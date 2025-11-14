@@ -15,12 +15,22 @@
     .out { margin-top: 16px; white-space: pre-wrap; }
     .cite { font-size: 12px; color: #374151; margin-top: 12px; }
     .cite ul { margin: 4px 0 0 16px; }
+    .topbar { display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+    .user { font-size:13px; color:#374151; }
+    .logout { background:#e11d48; }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>RAG Chat (English / 日本語)</h1>
-    <div class="row">
+    <div class="topbar">
+      <h1>RAG Chat (English / 日本語)</h1>
+      <div>
+        <span id="who" class="user">Checking...</span>
+        <button id="logout" class="logout" style="margin-left:8px;padding:8px 10px;border-radius:8px;border:0;color:white;cursor:pointer">Logout</button>
+      </div>
+    </div>
+
+    <div class="row" style="margin-bottom:8px">
       <select id="lang">
         <option value="">Auto</option>
         <option value="en">English</option>
@@ -28,51 +38,72 @@
       </select>
       <button id="run">Ask</button>
     </div>
+
     <textarea id="q" placeholder="Ask a question… (英語でも日本語でもOK)"></textarea>
     <div class="out" id="out"></div>
     <div class="cite" id="cite"></div>
   </div>
 
 <script>
-const API = "/chat";
+/*
+  Updated client script (cookie-based auth)
+  - Uses /api/auth/whoami to check login
+  - Posts to /api/chat (no X-API-Key header)
+  - Adds Logout
+*/
+
+const API_CHAT = "/api/chat";
+const API_WHOAMI = "/api/auth/whoami";
+const API_LOGOUT = "/api/auth/logout";
+
 const q = document.getElementById('q');
 const run = document.getElementById('run');
 const out = document.getElementById('out');
 const cite = document.getElementById('cite');
 const langSel = document.getElementById('lang');
+const whoEl = document.getElementById('who');
+const logoutBtn = document.getElementById('logout');
 
-// dev: prompt for API key once, store in sessionStorage
-function getDevKey() {
-  //const key = sessionStorage.getItem("dev_api_key");
-  const key = 'Af8DEeYg3QsbTszC1RUXcbEZ1DxJ48VbdDpmem4wbFg';
-  console.log(key);
-  if (key) return key;
-  const entered = prompt("Enter your X-API-Key for local testing (will be saved to sessionStorage):");
-  if (entered) sessionStorage.setItem("dev_api_key", entered.trim());
-  return entered ? entered.trim() : null;
+async function checkWhoami() {
+  try {
+    const res = await fetch(API_WHOAMI, { credentials: 'same-origin' });
+    if (!res.ok) {
+      // not authenticated -> go to login
+      window.location = "/login";
+      return;
+    }
+    const d = await res.json();
+    const uid = d.user_id || "unknown";
+    whoEl.textContent = uid ? `User: ${uid}` : "Anonymous";
+  } catch (e) {
+    console.error("whoami error", e);
+    window.location = "/login";
+  }
 }
+
+logoutBtn.onclick = async () => {
+  try {
+    await fetch(API_LOGOUT, { method: "POST", credentials: 'same-origin' });
+  } catch (e) {
+    console.warn("logout error", e);
+  } finally {
+    window.location = "/login";
+  }
+};
 
 run.onclick = async () => {
   const text = q.value.trim();
   if (!text) return;
-  const apiKey = getDevKey();
-  if (!apiKey) {
-    alert("No API key set. Reload and enter a key.");
-    return;
-  }
-
   run.disabled = true; out.textContent = "Thinking…"; cite.innerHTML = "";
+
   try {
-    const res = await fetch(API, {
+    const res = await fetch(API_CHAT, {
       method: "POST",
-      headers: {
-        "Content-Type":"application/json",
-        "X-API-Key": apiKey
-      },
+      credentials: 'same-origin',            // ensure cookies are sent
+      headers: { "Content-Type":"application/json" },
       body: JSON.stringify({ text, lang: langSel.value || null })
     });
 
-    // handle non-2xx responses gracefully
     if (!res.ok) {
       const err = await res.text();
       out.textContent = "Error " + res.status + ": " + err;
@@ -81,6 +112,7 @@ run.onclick = async () => {
 
     const data = await res.json();
     out.textContent = data.answer || "(no answer)";
+
     if (data.citations && data.citations.length) {
       const items = data.citations.map(c => {
         const url = c.meta && c.meta.url ? c.meta.url : (c.meta && c.meta.source_path ? c.meta.source_path : "");
@@ -88,13 +120,19 @@ run.onclick = async () => {
         return `<li>[${c.n}] ${label}${url ? ` — <code>${url}</code>` : ""}</li>`;
       }).join("");
       cite.innerHTML = `<strong>Sources</strong><ul>${items}</ul>`;
+    } else {
+      cite.innerHTML = "";
     }
+
   } catch (e) {
     out.textContent = "Error: " + e;
   } finally {
     run.disabled = false;
   }
 };
+
+// when page loads, verify auth and show user
+checkWhoami();
 </script>
 
 </body>

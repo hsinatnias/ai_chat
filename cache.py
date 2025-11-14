@@ -21,8 +21,11 @@ EMB_DIM_FALLBACK = int(os.getenv("EMB_DIM", "0")) or None
 # Redis client for exact-match cache
 redis = Redis.from_url(REDIS_URL, decode_responses=False)
 
-# === cache.py edits ===
-# Replace existing cache_answer / get_cached_answer with these:
+# top-level
+KB_VERSION = int(os.getenv("KB_VERSION", "1"))
+
+# Qdrant client
+qc = QdrantClient(url=QDRANT_URL)
 
 def make_key(prefix: str, *parts) -> str:
     h = hashlib.sha256("||".join(map(str, parts)).encode("utf-8")).hexdigest()
@@ -38,11 +41,19 @@ async def cache_answer(question: str, lang: str, answer_obj: dict, ttl: int = CA
     if module:
         obj["_module"] = module
     packed = msgpack.packb(obj)
-    await redis.set(key, packed, ex=ttl)
+    try:
+        await redis.set(key, packed, ex=ttl)
+    except Exception as e:
+        # Best-effort: log or ignore
+        print("WARN: cache_answer failed to set redis key:", e)
 
 async def get_cached_answer(question: str, lang: str):
     key = make_key("answer", question, lang)
-    data = await redis.get(key)
+    try:
+        data = await redis.get(key)
+    except Exception as e:
+        print("WARN: get_cached_answer redis.get failed:", e)
+        return None
     if not data:
         return None
     try:
@@ -54,14 +65,15 @@ async def get_cached_answer(question: str, lang: str):
 # Optional helper to list answer keys (for debugging)
 async def list_answer_keys(limit: int = 100):
     keys = []
-    async for k in redis.scan_iter(match="answer:*"):
-        keys.append(k)
-        if len(keys) >= limit:
-            break
+    try:
+        async for k in redis.scan_iter(match="answer:*"):
+            keys.append(k)
+            if len(keys) >= limit:
+                break
+    except Exception:
+        pass
     return keys
 
-
-# Replace semantic_cache_upsert with module-aware version:
 
 async def semantic_cache_upsert(id_: int, vector: list, payload: dict, module: str | None = None):
     """
@@ -90,12 +102,11 @@ async def semantic_cache_upsert(id_: int, vector: list, payload: dict, module: s
         print(f"INFO: semantic_cache_upsert id={id_} vec_len={(len(vector) if vector else 0)} payload_keys={list(payload.keys())}")
     except Exception as e:
         print("ERROR: semantic_cache_upsert failed:", e)
-        raise
+        # do not re-raise to avoid crashing callers in production flows
+        return None
 
 
 # --- Semantic cache using Qdrant ---
-qc = QdrantClient(url=QDRANT_URL)
-
 def _get_existing_collections() -> list:
     """
     Safely return list of existing collection names. If listing fails, returns [].
@@ -129,10 +140,6 @@ def _ensure_cache_collection(dim: int):
     except Exception as e:
         # tolerate races / "already exists" — just log and continue
         print(f"WARN: _ensure_cache_collection: could not create collection '{QDRANT_CACHE_COLLECTION}': {e}")
-
-# top-level
-KB_VERSION = int(os.getenv("KB_VERSION", "1"))
-
 
 
 def semantic_cache_search(vector: list, top_k: int = 1, score_threshold: float = 0.78, kb_version: int | None = None):
