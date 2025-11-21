@@ -13,7 +13,7 @@ try:
 except Exception:
     _redis_available = False
 
-API_KEY = os.getenv("API_KEY", "")            # single key (plaintext)
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "")            # single key (plaintext)
 API_KEYS = os.getenv("API_KEYS", "")          # comma-separated keys (plaintext)
 API_KEY_HASHED_SET = os.getenv("API_KEY_HASHED_SET", "")  # name of redis set if using Redis hashed keys
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
@@ -23,8 +23,8 @@ def _sha256_hex(s: str) -> str:
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 _configured_hashes = set()
-if API_KEY:
-    _configured_hashes.add(_sha256_hex(API_KEY.strip()))
+if ADMIN_API_KEY:
+    _configured_hashes.add(_sha256_hex(ADMIN_API_KEY.strip()))
 if API_KEYS:
     for k in API_KEYS.split(","):
         k = k.strip()
@@ -42,7 +42,7 @@ def _is_valid_plain_key(key: str) -> bool:
     """Compare provided key against configured plaintext keys (constant-time)."""
     if not key:
         return False
-    # check against API_KEY / API_KEYS by hashing and comparing to configured hashes
+    # check against ADMIN_API_KEY / API_KEYS by hashing and comparing to configured hashes
     key_hash = _sha256_hex(key)
     for h in _configured_hashes:
         if hmac.compare_digest(key_hash, h):
@@ -63,7 +63,7 @@ def require_api_key(x_api_key: Optional[str] = Header(None), request: Request = 
     """
     FastAPI dependency to require an API key.
     - Accepts header 'X-API-Key'
-    - If no API_KEY or API_KEYS or Redis set configured, raises 401 (forces operator to set keys)
+    - If no ADMIN_API_KEY or API_KEYS or Redis set configured, raises 401 (forces operator to set keys)
     - Uses constant-time comparison to avoid timing attacks
     """
     # If no keys are configured at all, treat as development mode and allow (explicit)

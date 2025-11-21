@@ -21,6 +21,11 @@
     select, input[type=text] { padding:8px; border-radius:6px; border:1px solid #ddd; }
     .controls { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
     .muted { color:#666; font-size:13px; margin-left:10px; }
+    /* Users panel small styles */
+    #usersList > div.user-row { display:flex; justify-content:space-between; align-items:center; padding:8px 6px; border-bottom:1px solid #f3f4f6; }
+    #usersPanel h2 { margin-bottom:8px; }
+    /* Create user modal centering */
+    #createUserModal { display:none; align-items:center; justify-content:center; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:2000; }
   </style>
 
   <script>
@@ -76,7 +81,48 @@
       <p class="small">After upload, click "Trigger ingest" to run server-side ingest for the selected module.</p>
     </div>
 
+    <hr />
+
+    <!-- Users management panel -->
+    <section id="usersPanel" style="margin-top:12px;">
+      <h2>Users</h2>
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <button id="refreshUsersBtn">Refresh users</button>
+        <button id="showCreateUserBtn">Create user</button>
+        <span class="muted">Manage application users (add / edit / delete)</span>
+      </div>
+
+      <div id="usersList" style="background:#fff;padding:12px;border-radius:8px;border:1px solid #eee; max-height:320px; overflow:auto;">
+        <div class="small muted">Loading users...</div>
+      </div>
+    </section>
+
     <div class="log" id="log">Logs will appear here...</div>
+  </div>
+
+  <!-- Create user modal -->
+  <div id="createUserModal">
+    <div style="background:white;padding:18px;border-radius:10px; max-width:520px; width:94%; box-shadow:0 12px 32px rgba(0,0,0,0.18);">
+      <h3 style="margin-top:0">Create user</h3>
+      <label>Email</label>
+      <input id="cu_email" type="email" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ddd;border-radius:6px" />
+      <label>Name (optional)</label>
+      <input id="cu_name" type="text" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ddd;border-radius:6px" />
+      <label>Password</label>
+      <input id="cu_password" type="password" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ddd;border-radius:6px" />
+      <label>Confirm password</label>
+      <input id="cu_password2" type="password" style="width:100%;padding:8px;margin-bottom:8px;border:1px solid #ddd;border-radius:6px" />
+      <div style="margin:10px 0; display:flex; gap:8px; align-items:center;">
+        <label style="display:flex; gap:6px; align-items:center;">
+          <input id="cu_is_active" type="checkbox" checked /> Active
+        </label>
+        <span id="cu_msg" style="color:red;margin-left:8px"></span>
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button id="cu_cancel">Cancel</button>
+        <button id="cu_create" style="background:#111827;color:white">Create</button>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -100,9 +146,17 @@
       const ingestBtn = document.getElementById('ingestBtn');
       const deleteCollectionBtn = document.getElementById('deleteCollectionBtn');
 
+      // Users elements
+      const refreshUsersBtn = document.getElementById('refreshUsersBtn');
+      const showCreateUserBtn = document.getElementById('showCreateUserBtn');
+      const usersListEl = document.getElementById('usersList');
+      const createModal = document.getElementById('createUserModal');
+      const cu_cancel = document.getElementById('cu_cancel');
+      const cu_create = document.getElementById('cu_create');
+      const cu_msg = document.getElementById('cu_msg');
+
       // small helpers
-      //function getApiKey() { return sessionStorage.getItem('dev_api_key') || null; }
-      function getApiKey() { return 'Af8DEeYg3QsbTszC1RUXcbEZ1DxJ48VbdDpmem4wbFg' }
+      function getApiKey() { return sessionStorage.getItem('dev_api_key') || null; }
       function showKeyBadge() { keyBadge.textContent = getApiKey() ? 'API key present' : 'No API key'; }
       function ts() { return new Date().toLocaleTimeString(); }
       function log(...args) {
@@ -311,10 +365,182 @@
         } catch (e) { log('Delete error:', e.toString()); alert('Delete request failed'); }
       };
 
+      // -----------------------
+      // Users UI functions
+      // -----------------------
+      async function fetchUsers() {
+        const key = getApiKey();
+        if (!key) { usersListEl.innerHTML = '<div class="small muted">No API key set</div>'; return; }
+        usersListEl.innerHTML = '<div class="small muted">Loading users...</div>';
+        try {
+          const res = await fetch('/admin/users', { headers: { 'X-API-Key': key } });
+          if (!res.ok) {
+            const txt = await res.text();
+            usersListEl.innerHTML = `<div class="small" style="color:red">Failed to load users: ${res.status} ${txt}</div>`;
+            return;
+          }
+          const users = await res.json();
+          renderUsers(users);
+        } catch (e) {
+          usersListEl.innerHTML = `<div class="small" style="color:red">Error: ${e.toString()}</div>`;
+        }
+      }
+
+      function renderUsers(users) {
+        if (!Array.isArray(users) || users.length === 0) {
+          usersListEl.innerHTML = '<div class="small muted">No users found</div>';
+          return;
+        }
+        usersListEl.innerHTML = '';
+        users.forEach(u => {
+          const row = document.createElement('div');
+          row.className = 'user-row';
+          const left = document.createElement('div');
+          left.innerHTML = `<div style="font-weight:600">${u.email || '(no email)'}</div>
+                            <div class="small muted">${u.name || ''} • ${u.created_at || ''} • ${u.is_active ? 'active' : 'inactive'}</div>`;
+
+          const actions = document.createElement('div');
+          actions.style.display = 'flex';
+          actions.style.gap = '8px';
+          actions.style.alignItems = 'center';
+
+          const editBtn = document.createElement('button');
+          editBtn.textContent = 'Edit';
+          editBtn.onclick = () => showEditUser(u);
+
+          const delBtn = document.createElement('button');
+          delBtn.textContent = 'Delete';
+          delBtn.className = 'danger';
+          delBtn.onclick = () => deleteUser(u.id);
+
+          actions.appendChild(editBtn);
+          actions.appendChild(delBtn);
+
+          row.appendChild(left);
+          row.appendChild(actions);
+          usersListEl.appendChild(row);
+        });
+      }
+
+      // show create modal
+      showCreateUserBtn.onclick = () => {
+        cu_msg.textContent = '';
+        document.getElementById('cu_email').value = '';
+        document.getElementById('cu_name').value = '';
+        document.getElementById('cu_password').value = '';
+        document.getElementById('cu_password2').value = '';
+        document.getElementById('cu_is_active').checked = true;
+        createModal.style.display = 'flex';
+      };
+      cu_cancel.onclick = () => createModal.style.display = 'none';
+
+      // create user
+      cu_create.onclick = async () => {
+        cu_msg.textContent = '';
+        const email = document.getElementById('cu_email').value.trim();
+        const name = document.getElementById('cu_name').value.trim();
+        const password = document.getElementById('cu_password').value;
+        const password2 = document.getElementById('cu_password2').value;
+        const is_active = document.getElementById('cu_is_active').checked;
+
+        if (!email) { cu_msg.textContent = 'Email required'; return; }
+        if (!password) { cu_msg.textContent = 'Password required'; return; }
+        if (password !== password2) { cu_msg.textContent = 'Passwords do not match'; return; }
+
+        const key = getApiKey();
+        if (!key) { cu_msg.textContent = 'Missing API key'; return; }
+
+        cu_create.disabled = true;
+        cu_create.textContent = 'Creating...';
+
+        try {
+          const res = await fetch('/admin/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+            body: JSON.stringify({ email, name, password, is_active })
+          });
+          const dataText = await res.text();
+          let data;
+          try { data = JSON.parse(dataText); } catch (e) { data = { ok: false, error: dataText }; }
+
+          if (!res.ok) {
+            cu_msg.textContent = data.error || `Failed: ${res.status}`;
+          } else {
+            // success
+            createModal.style.display = 'none';
+            await fetchUsers(); // refresh
+          }
+        } catch (e) {
+          cu_msg.textContent = e.toString();
+        } finally {
+          cu_create.disabled = false;
+          cu_create.textContent = 'Create';
+        }
+      };
+
+      // delete user
+      async function deleteUser(userId) {
+        if (!confirm('Delete user? This is permanent.')) return;
+        const key = getApiKey();
+        if (!key) { alert('Missing API key'); return; }
+        try {
+          const res = await fetch(`/admin/users/${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { 'X-API-Key': key }});
+          if (!res.ok) {
+            const t = await res.text();
+            alert('Delete failed: ' + t);
+          } else {
+            await fetchUsers();
+          }
+        } catch (e) {
+          alert('Delete error: ' + e.toString());
+        }
+      }
+
+      // show edit user (simple prompt-based editor)
+      function showEditUser(u) {
+        const newName = prompt('Name', u.name || '');
+        if (newName === null) return;
+        const newEmail = prompt('Email', u.email || '');
+        if (newEmail === null) return;
+        const changePassword = confirm('Change password for this user? (Cancel to keep existing)');
+        let newPassword = null;
+        if (changePassword) {
+          newPassword = prompt('New password (will be hashed)', '');
+          if (newPassword === null) return;
+          if (!newPassword) { alert('Empty password not allowed'); return; }
+        }
+        const is_active = confirm('Should user be active? OK = active, Cancel = inactive');
+
+        // build body
+        const body = { name: newName, email: newEmail, is_active };
+        if (newPassword) body.password = newPassword;
+
+        // send update
+        const key = getApiKey();
+        fetch(`/admin/users/${encodeURIComponent(u.id)}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': key },
+          body: JSON.stringify(body)
+        }).then(async (res) => {
+          if (!res.ok) {
+            const t = await res.text();
+            alert('Update failed: ' + t);
+          } else {
+            await fetchUsers();
+          }
+        }).catch(e => alert('Update error: ' + e.toString()));
+      }
+
+      // wire refresh button
+      refreshUsersBtn.onclick = fetchUsers;
+
       // On load: show key, fetch modules and check ingest status (if ingest currently running, start polling)
       (async function init() {
         showKeyBadge();
         await fetchModules();
+        // fetch users after modules so UI looks ready
+        try { await fetchUsers(); } catch (e) { /* noop */ }
+
         // check if ingest already running -> start polling only if needed
         try {
           const key = getApiKey();

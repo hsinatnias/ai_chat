@@ -7,6 +7,10 @@ import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import sqlite3
+import hashlib
+import urllib.parse
+
 import sqlalchemy
 from fastapi import APIRouter, Depends, Path as FPath, HTTPException, File, UploadFile, Form, Request
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
@@ -26,6 +30,83 @@ STATUS_DIR = os.getenv("INGEST_STATUS_DIR", "data/ingest")
 STATUS_FILE = os.path.join(STATUS_DIR, "ingest_status.json")
 INGEST_LOG = os.path.join(STATUS_DIR, "ingest.log")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kb_chunks")
+
+
+# -----------------------
+# Helpers for ingested_files bookkeeping (kept inline for compatibility with ingest.py)
+# -----------------------
+def _sqlite_file_from_db_url():
+    db_url = os.getenv("DATABASE_URL", "")
+    if not db_url:
+        return os.getenv("DATABASE_SQLITE_FILE", "data/app.db")
+    # handle sqlite+...:// or sqlite://
+    if db_url.startswith("sqlite"):
+        parts = db_url.split("://", 1)
+        if len(parts) == 2:
+            path = parts[1]
+            # decode any %20 etc
+            path = urllib.parse.unquote(path)
+            # normalize for relative path
+            if path.startswith('/'):
+                path = path[1:]
+            return path
+    return os.getenv("DATABASE_SQLITE_FILE", "data/app.db")
+
+SQLITE_DB_FILE = _sqlite_file_from_db_url()
+
+def _db_conn():
+    # isolation_level=None -> autocommit; timeout small
+    return sqlite3.connect(SQLITE_DB_FILE, timeout=10, detect_types=sqlite3.PARSE_COLNAMES)
+
+def file_fingerprint(path: str, use_strong: bool = False) -> str:
+    """
+    Fast fingerprint (default): sha1 of path|size|mtime (same as ingest.py default).
+    If use_strong=True, hashes file contents (slower but exact).
+    """
+    p = Path(path)
+    if not p.exists():
+        return ""
+    if not use_strong:
+        st = p.stat()
+        s = f"{str(p)}|{st.st_size}|{int(st.st_mtime)}"
+        return hashlib.sha1(s.encode("utf-8")).hexdigest()
+    # strong content hash
+    h = hashlib.sha1()
+    with p.open("rb") as fh:
+        while True:
+            chunk = fh.read(65536)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+def mark_pending_ingested_file(module: str, filename: str, file_path: str, content_hash: str, file_size: int = None):
+    """
+    Insert or update ingested_files row marking it as 'pending' (uploaded but not ingested).
+    Mirrors ingest.py's upsert style so duplicate uploads update the row.
+    """
+    try:
+        conn = _db_conn()
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO ingested_files (module, filename, file_path, content_hash, file_size,
+                                       uploaded_at, ingested_at, status, qdrant_collection, points_count, error)
+            VALUES (?, ?, ?, ?, ?, datetime('now'), NULL, 'pending', NULL, 0, NULL)
+            ON CONFLICT(content_hash, module) DO UPDATE SET
+               filename=excluded.filename,
+               file_path=excluded.file_path,
+               file_size=excluded.file_size,
+               uploaded_at=datetime('now'),
+               status='pending',
+               qdrant_collection=NULL,
+               points_count=0,
+               error=NULL
+        """, (module, filename, file_path, content_hash, file_size or 0))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # don't fail request if this logging fails; write to admin log
+        _append_admin_log(f"mark_pending_ingested_file error: {e}")
 
 
 # -----------------------
@@ -58,7 +139,7 @@ async def admin_create_user(body: dict, ok: bool = Depends(require_admin_key), d
     password = (body.get("password") if isinstance(body, dict) else None) or None
     name = (body.get("name") if isinstance(body, dict) else "") or ""
     is_active = body.get("is_active", True) if isinstance(body, dict) else True
-
+    
     if not email:
         return JSONResponse({"ok": False, "error": "email required"}, status_code=400)
     if not password:
@@ -70,8 +151,9 @@ async def admin_create_user(body: dict, ok: bool = Depends(require_admin_key), d
             return JSONResponse({"ok": False, "error": "email already exists"}, status_code=409)
     except Exception:
         return JSONResponse({"ok": False, "error": "db error"}, status_code=500)
+    
 
-    uid = gen_user_id()
+    uid = gen_user_id()    
     pw_hash = hash_password(password)
     now = datetime.datetime.utcnow()
     try:
@@ -214,14 +296,30 @@ def admin_login_page():
 # -----------------------
 # Admin auth + content endpoints
 # -----------------------
+# admin.py
 @router.post("/auth", include_in_schema=False)
 async def admin_auth(body: Dict):
-    key = (body.get("key") if isinstance(body, dict) else None) or None
+    """
+    Validate a provided key in JSON body: { "key": "<the_key>" }.
+    Returns { ok: true } when valid.
+    Uses same validation helpers as app_security (plain keys or Redis-hashed set).
+    """
+    from app_security import _is_valid_plain_key, _is_valid_redis_key
+
+    if not body or "key" not in body:
+        return JSONResponse({"ok": False, "error": "missing key"}, status_code=400)
+    key = (body.get("key") or "").strip()
     if not key:
-        return JSONResponse({"ok": False, "error": "key required"}, status_code=400)
-    if key != ADMIN_API_KEY:
-        return JSONResponse({"ok": False, "error": "invalid key"}, status_code=401)
-    return JSONResponse({"ok": True})
+        return JSONResponse({"ok": False, "error": "empty key"}, status_code=400)
+
+    try:
+        if _is_valid_plain_key(key) or _is_valid_redis_key(key):
+            return JSONResponse({"ok": True})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+
+    return JSONResponse({"ok": False, "error": "invalid key"}, status_code=401)
+
 
 
 @router.get("/content", include_in_schema=False)
@@ -291,6 +389,7 @@ async def admin_upload(request: Request, file: UploadFile = File(...), module: s
 
     target = target_dir / filename
     try:
+        # write uploaded file to disk
         with open(target, "wb") as fh:
             shutil.copyfileobj(file.file, fh)
     except Exception as e:
@@ -298,9 +397,26 @@ async def admin_upload(request: Request, file: UploadFile = File(...), module: s
     finally:
         await file.close()
 
-    _append_admin_log(f"Uploaded file {filename} -> {target}")
-    _write_admin_status({"pid": None, "status": "uploaded", "path": str(target), "module": module})
-    return JSONResponse({"ok": True, "path": str(target), "module": module})
+    # compute fingerprint (fast default: path|size|mtime)
+    try:
+        content_hash = file_fingerprint(str(target), use_strong=False)
+    except Exception:
+        content_hash = ""
+
+    try:
+        file_size = target.stat().st_size if target.exists() else 0
+    except Exception:
+        file_size = 0
+
+    # mark pending ingestion in ingested_files
+    try:
+        mark_pending_ingested_file(module=module, filename=filename, file_path=str(target), content_hash=content_hash, file_size=file_size)
+    except Exception as e:
+        _append_admin_log(f"Failed to mark uploaded file in ingested_files: {e}")
+
+    _append_admin_log(f"Uploaded file {filename} -> {target} (content_hash={content_hash})")
+    _write_admin_status({"pid": None, "status": "uploaded", "path": str(target), "module": module, "content_hash": content_hash})
+    return JSONResponse({"ok": True, "path": str(target), "module": module, "content_hash": content_hash})
 
 
 @router.post("/ingest", dependencies=[Depends(require_api_key)])

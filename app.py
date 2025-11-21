@@ -26,6 +26,7 @@ from db import get_async_db
 import sqlalchemy
 from admin import router as admin_router
 from admin import public_admin_router as public_admin_router
+from helpers import verify_password
 
 
 # Qdrant
@@ -606,9 +607,36 @@ async def api_login(body: dict, db = Depends(get_async_db)):
 
 # GET /api/auth/whoami -> useful for client-side checks
 @app.get("/api/auth/whoami")
-async def api_whoami(session = Depends(current_session)):
-    # current_session raises 401 when not authenticated (good for protected endpoint)
-    return {"session_id": session.get("session_id"), "user_id": session.get("user_id")}
+async def api_whoami(session = Depends(current_session), db = Depends(get_async_db)):
+    """
+    Returns session info plus basic user profile (email, name) for client display.
+    Non-sensitive: returns user_id, email, name, and session_id.
+    """
+    user_id = session.get("user_id")
+    if not user_id:
+        return {"session_id": session.get("session_id"), "user_id": ""}
+    try:
+        q = await db.execute(
+            sqlalchemy.text("SELECT id, email, name, is_active FROM users WHERE id = :id"),
+            {"id": user_id}
+        )
+        row = q.first()
+    except Exception:
+        # best-effort: don't leak DB internals; return only the id
+        return {"session_id": session.get("session_id"), "user_id": user_id}
+
+    if not row:
+        return {"session_id": session.get("session_id"), "user_id": user_id}
+
+    uid, email, name, is_active = row[0], row[1], row[2], row[3]
+    return {
+        "session_id": session.get("session_id"),
+        "user_id": uid,
+        "email": email,
+        "name": name or "",
+        "is_active": bool(is_active) if is_active is not None else True
+    }
+
 
 
 # POST /api/auth/logout

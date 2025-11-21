@@ -73,8 +73,19 @@ async function checkWhoami() {
       return;
     }
     const d = await res.json();
-    const uid = d.user_id || "unknown";
-    whoEl.textContent = uid ? `User: ${uid}` : "Anonymous";
+    // Prefer name, then email, then user_id
+    let label = "";
+    if (d.name && d.name.trim()) {
+      label = `${d.name.trim()}`;
+      if (d.email) label += ` (${d.email})`;
+    } else if (d.email && d.email.trim()) {
+      label = d.email;
+    } else if (d.user_id) {
+      label = d.user_id;
+    } else {
+      label = "Anonymous";
+    }
+    whoEl.textContent = `User: ${label}`;
   } catch (e) {
     console.error("whoami error", e);
     window.location = "/login";

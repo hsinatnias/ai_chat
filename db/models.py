@@ -55,3 +55,23 @@ class Session(Base):
     created_at = sa.Column(sa.DateTime(timezone=True), default=datetime.utcnow)
     expires_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
     meta = sa.Column(JSON, nullable=True)
+    
+class IngestedFile(Base):
+    __tablename__ = "ingested_files"
+
+    id = sa.Column(sa.Integer, primary_key=True, autoincrement=True)
+    module = sa.Column(sa.String, nullable=False, index=True)
+    filename = sa.Column(sa.String, nullable=False)
+    file_path = sa.Column(sa.String, nullable=False)
+    content_hash = sa.Column(sa.String, nullable=False, index=True)
+    file_size = sa.Column(sa.Integer, nullable=True)
+    uploaded_at = sa.Column(sa.DateTime(timezone=True), default=datetime.utcnow)
+    ingested_at = sa.Column(sa.DateTime(timezone=True), nullable=True)
+    status = sa.Column(sa.String, nullable=False, default="pending")  # pending | processing | ingested | error | replaced
+    qdrant_collection = sa.Column(sa.String, nullable=True)
+    points_count = sa.Column(sa.Integer, nullable=False, default=0)
+    error = sa.Column(sa.Text, nullable=True)
+
+    # ensure per-module uniqueness of a file's content (same content can exist across modules)
+    __table_args__ = (sa.UniqueConstraint("content_hash", "module", name="uix_content_module"),)
+
