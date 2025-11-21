@@ -350,49 +350,6 @@ def sanitize_document_text(text: str) -> str:
 
 
 # ---- main ingest flow (integrated: store full text compressed into payload) ----
-
-
-def ensure_ingested_table():
-    \"\"\"Ensure the ingested_files table exists in the sqlite DB used by this script.
-    This is idempotent and will prevent 'no such table' errors when the subprocess uses the same DB.
-    \"\"\"
-    try:
-        conn = _db_conn()
-        cur = conn.cursor()
-        cur.execute(\"\"\"
-        CREATE TABLE IF NOT EXISTS ingested_files (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          module TEXT NOT NULL,
-          filename TEXT NOT NULL,
-          file_path TEXT NOT NULL,
-          content_hash TEXT NOT NULL,
-          file_size INTEGER,
-          uploaded_at TEXT DEFAULT (datetime('now')),
-          ingested_at TEXT DEFAULT NULL,
-          status TEXT DEFAULT 'pending',
-          qdrant_collection TEXT DEFAULT NULL,
-          points_count INTEGER DEFAULT 0,
-          error TEXT DEFAULT NULL,
-          UNIQUE(content_hash, module)
-        )
-        \"\"\")
-        conn.commit()
-        conn.close()
-        _append_log(f\"Ensured ingested_files table exists in {SQLITE_DB_FILE}\")
-    except Exception as e:
-        _append_log(f\"ensure_ingested_table error: {e}\")
-
-# Log resolved DB file and ensure table exists early in startup
-try:
-    _append_log(f\"ingest.py resolved SQLITE_DB_FILE={SQLITE_DB_FILE}\")
-    ensure_ingested_table()
-except Exception as _e:
-    try:
-        _append_log(f\"Error ensuring ingested_files table on startup: {_e}\")
-    except Exception:
-        pass
-
-
 if __name__ == "__main__":
     # initial status/log
     _write_status({"pid": os.getpid(), "status": "starting", "progress": "initializing", "message": "Ingest starting"})
